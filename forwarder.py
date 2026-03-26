@@ -50,13 +50,14 @@ def forward_email(msg, mailbox):
         try:
             logger.info(f"Forwarding email: '{msg.subject}' from {msg.from_} (attempt {attempt}/{max_retries})")
             
-            # Create forwarded message preserving original content
+            # Create forwarded message
+            # Use authenticated Mailo address as From to prevent SMTP rejection
             forward_msg = EmailMessage()
-            forward_msg['From'] = msg.from_
+            forward_msg['From'] = SMTP_USER  # Must be the authenticated Mailo address
             forward_msg['To'] = FORWARD_TO
             forward_msg['Subject'] = f"Fwd: {msg.subject}"
-            forward_msg['X-Forwarded-From'] = IMAP_USER
-            forward_msg['X-Forwarded-To'] = FORWARD_TO
+            forward_msg['Reply-To'] = msg.from_  # So replies go to original sender
+            forward_msg['X-Original-From'] = msg.from_  # Preserve original sender info
 
             # Copy body and attachments
             if msg.html:
