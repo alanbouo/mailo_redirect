@@ -41,6 +41,7 @@ FORWARD_TO = os.getenv('FORWARD_TO')
 
 CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', 300))  # 5 minutes default
 SMTP_TIMEOUT = int(os.getenv('SMTP_TIMEOUT', 30))  # SMTP connection timeout in seconds
+DELETE_AFTER_FORWARD = os.getenv('DELETE_AFTER_FORWARD', 'false').lower() == 'true'  # Delete original after forwarding
 
 
 def forward_email(msg, mailbox):
@@ -130,7 +131,14 @@ def main():
                         # Mark as read on Mailo
                         mailbox.flag(msg.uid, ['\\Seen'], True)
                         logger.debug(f"Marked message as read: UID {msg.uid}")
-                        # Optional: mailbox.delete(msg.uid)  # or move to another folder
+                        
+                        # Optionally delete original after forwarding
+                        if DELETE_AFTER_FORWARD:
+                            try:
+                                mailbox.delete(msg.uid)
+                                logger.info(f"🗑️ Deleted original message: UID {msg.uid}")
+                            except Exception as e:
+                                logger.warning(f"⚠️ Failed to delete message UID {msg.uid}: {e}")
                     else:
                         # If forwarding failed, don't mark as read so we can retry next cycle
                         logger.warning(f"⚠️ Keeping message unread due to forwarding failure: '{msg.subject}'")
