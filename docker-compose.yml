@@ -8,4 +8,7 @@ services:
       - IMAP_PASS=${IMAP_PASS}
       - FORWARD_TO=${FORWARD_TO}
       - CHECK_INTERVAL=${CHECK_INTERVAL:-300}
-    # Optional: add logging volume if needed
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LOG_FILE=${LOG_FILE:-/app/logs/forwarder.log}
+    volumes:
+      - ./logs:/app/logs
