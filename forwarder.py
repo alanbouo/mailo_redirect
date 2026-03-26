@@ -3,7 +3,7 @@ import time
 import sys
 import logging
 from datetime import datetime
-from imap_tools import MailBoxTls, AND
+from imap_tools import MailBox, AND
 import smtplib
 from email.message import EmailMessage
 
@@ -87,7 +87,7 @@ def main():
     while True:
         try:
             logger.debug(f"Connecting to IMAP server {IMAP_SERVER}:{IMAP_PORT}")
-            with MailBoxTls(IMAP_SERVER, IMAP_PORT).login(IMAP_USER, IMAP_PASS, 'INBOX') as mailbox:
+            with MailBox(IMAP_SERVER, IMAP_PORT).login(IMAP_USER, IMAP_PASS, 'INBOX') as mailbox:
                 logger.debug("IMAP connection successful")
                 
                 # Fetch only unseen messages
