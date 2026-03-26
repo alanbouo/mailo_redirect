@@ -6,8 +6,6 @@ services:
     environment:
       - IMAP_USER=${IMAP_USER}
       - IMAP_PASS=${IMAP_PASS}
-      - SMTP_USER=${SMTP_USER}
-      - SMTP_PASS=${SMTP_PASS}
       - FORWARD_TO=${FORWARD_TO}
       - CHECK_INTERVAL=${CHECK_INTERVAL:-300}
     # Optional: add logging volume if needed

@@ -11,10 +11,10 @@ IMAP_PORT = 993
 IMAP_USER = os.getenv('IMAP_USER')
 IMAP_PASS = os.getenv('IMAP_PASS')
 
-SMTP_SERVER = 'smtp.gmail.com'
+SMTP_SERVER = 'mail.mailo.com'
 SMTP_PORT = 465
-SMTP_USER = os.getenv('SMTP_USER')
-SMTP_PASS = os.getenv('SMTP_PASS')
+SMTP_USER = os.getenv('IMAP_USER')  # Same as IMAP credentials for Mailo SMTP
+SMTP_PASS = os.getenv('IMAP_PASS')  # Same as IMAP password for Mailo SMTP
 FORWARD_TO = os.getenv('FORWARD_TO')
 
 CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', 300))  # 5 minutes default
@@ -72,6 +72,6 @@ def main():
 
 
 if __name__ == "__main__":
-    if not all([IMAP_USER, IMAP_PASS, SMTP_USER, SMTP_PASS, FORWARD_TO]):
-        raise ValueError("Missing required environment variables")
+    if not all([IMAP_USER, IMAP_PASS, FORWARD_TO]):
+        raise ValueError("Missing required environment variables: IMAP_USER, IMAP_PASS, FORWARD_TO")
     main()
