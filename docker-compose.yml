@@ -1,0 +1,13 @@
+services:
+  mailo-forwarder:
+    build: .
+    container_name: mailo-forwarder
+    restart: unless-stopped
+    environment:
+      - IMAP_USER=your-full-mailo-address@netc.fr
+      - IMAP_PASS=your_mailo_password
+      - SMTP_USER=alandji.b@gmail.com
+      - SMTP_PASS=your_16_char_gmail_app_password
+      - FORWARD_TO=alandji.b@gmail.com
+      - CHECK_INTERVAL=300   # seconds (recommended: 180–600)
+    # Optional: add logging volume if needed
