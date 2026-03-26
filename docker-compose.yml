@@ -8,6 +8,8 @@ services:
       - IMAP_PASS=${IMAP_PASS}
       - FORWARD_TO=${FORWARD_TO}
       - CHECK_INTERVAL=${CHECK_INTERVAL:-300}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_TIMEOUT=${SMTP_TIMEOUT:-30}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - LOG_FILE=${LOG_FILE:-/app/logs/forwarder.log}
     volumes:

@@ -1,6 +1,7 @@
 import os
 import time
 import sys
+import socket
 import logging
 from datetime import datetime
 from imap_tools import MailBox, AND
@@ -33,50 +34,73 @@ IMAP_USER = os.getenv('IMAP_USER')
 IMAP_PASS = os.getenv('IMAP_PASS')
 
 SMTP_SERVER = 'mail.mailo.com'
-SMTP_PORT = 465
+SMTP_PORT = int(os.getenv('SMTP_PORT', 587))  # 587 for STARTTLS, 465 for SSL
 SMTP_USER = os.getenv('IMAP_USER')  # Same as IMAP credentials for Mailo SMTP
 SMTP_PASS = os.getenv('IMAP_PASS')  # Same as IMAP password for Mailo SMTP
 FORWARD_TO = os.getenv('FORWARD_TO')
 
 CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', 300))  # 5 minutes default
+SMTP_TIMEOUT = int(os.getenv('SMTP_TIMEOUT', 30))  # SMTP connection timeout in seconds
 
 
-def forward_email(msg):
-    try:
-        logger.info(f"Forwarding email: '{msg.subject}' from {msg.from_}")
-        
-        # Create forwarded message preserving original content
-        forward_msg = EmailMessage()
-        forward_msg['From'] = msg.from_
-        forward_msg['To'] = FORWARD_TO
-        forward_msg['Subject'] = f"Fwd: {msg.subject}"
-        forward_msg['X-Forwarded-From'] = IMAP_USER
-        forward_msg['X-Forwarded-To'] = FORWARD_TO
+def forward_email(msg, mailbox):
+    """Forward a single email via SMTP with retry logic."""
+    max_retries = 2
+    for attempt in range(1, max_retries + 1):
+        try:
+            logger.info(f"Forwarding email: '{msg.subject}' from {msg.from_} (attempt {attempt}/{max_retries})")
+            
+            # Create forwarded message preserving original content
+            forward_msg = EmailMessage()
+            forward_msg['From'] = msg.from_
+            forward_msg['To'] = FORWARD_TO
+            forward_msg['Subject'] = f"Fwd: {msg.subject}"
+            forward_msg['X-Forwarded-From'] = IMAP_USER
+            forward_msg['X-Forwarded-To'] = FORWARD_TO
 
-        # Copy body and attachments
-        if msg.html:
-            forward_msg.add_alternative(msg.html, subtype='html')
-        else:
-            forward_msg.set_content(msg.text or "")
+            # Copy body and attachments
+            if msg.html:
+                forward_msg.add_alternative(msg.html, subtype='html')
+            else:
+                forward_msg.set_content(msg.text or "")
 
-        # Add attachments if any
-        attachment_count = len(msg.attachments)
-        if attachment_count > 0:
-            logger.debug(f"Processing {attachment_count} attachment(s)")
-        for att in msg.attachments:
-            forward_msg.add_attachment(att.payload, maintype=att.maintype, subtype=att.subtype, filename=att.filename)
+            # Add attachments if any
+            attachment_count = len(msg.attachments)
+            if attachment_count > 0:
+                logger.debug(f"Processing {attachment_count} attachment(s)")
+            for att in msg.attachments:
+                forward_msg.add_attachment(att.payload, maintype=att.maintype, subtype=att.subtype, filename=att.filename)
 
-        # Send via Mailo SMTP
-        logger.debug(f"Connecting to SMTP server {SMTP_SERVER}:{SMTP_PORT}")
-        with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
-            server.login(SMTP_USER, SMTP_PASS)
-            server.send_message(forward_msg)
+            # Send via Mailo SMTP with timeout
+            logger.debug(f"Connecting to SMTP server {SMTP_SERVER}:{SMTP_PORT} (timeout={SMTP_TIMEOUT}s)")
+            if SMTP_PORT == 465:
+                # SSL connection (implicit TLS)
+                with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=SMTP_TIMEOUT) as server:
+                    server.login(SMTP_USER, SMTP_PASS)
+                    server.send_message(forward_msg)
+            else:
+                # STARTTLS connection (explicit TLS on port 587)
+                with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=SMTP_TIMEOUT) as server:
+                    server.starttls()
+                    server.login(SMTP_USER, SMTP_PASS)
+                    server.send_message(forward_msg)
 
-        logger.info(f"✅ Successfully forwarded: '{msg.subject}' | From: {msg.from_}")
-        return True
-    except Exception as e:
-        logger.error(f"❌ Failed to forward '{msg.subject}': {e}", exc_info=True)
-        return False
+            logger.info(f"✅ Successfully forwarded: '{msg.subject}' | From: {msg.from_}")
+            return True
+        except (socket.timeout, TimeoutError) as e:
+            logger.warning(f"⏱️ SMTP timeout on attempt {attempt}: {e}")
+            if attempt < max_retries:
+                logger.info(f"Retrying in 5 seconds...")
+                time.sleep(5)
+                continue
+            else:
+                logger.error(f"❌ SMTP connection failed after {max_retries} attempts")
+                return False
+        except Exception as e:
+            logger.error(f"❌ Failed to forward '{msg.subject}': {e}", exc_info=True)
+            return False
+    
+    return False
 
 
 def main():
@@ -101,11 +125,14 @@ def main():
                     logger.info("✓ No unread messages")
                 
                 for msg in messages:
-                    if forward_email(msg):
+                    if forward_email(msg, mailbox):
                         # Mark as read on Mailo
                         mailbox.flag(msg.uid, ['\\Seen'], True)
                         logger.debug(f"Marked message as read: UID {msg.uid}")
                         # Optional: mailbox.delete(msg.uid)  # or move to another folder
+                    else:
+                        # If forwarding failed, don't mark as read so we can retry next cycle
+                        logger.warning(f"⚠️ Keeping message unread due to forwarding failure: '{msg.subject}'")
 
         except Exception as e:
             logger.error(f"❌ Connection error: {e}", exc_info=True)
