@@ -86,6 +86,7 @@ def main():
 
     while True:
         try:
+            logger.info(f"⏳ Checking for new emails...")
             logger.debug(f"Connecting to IMAP server {IMAP_SERVER}:{IMAP_PORT}")
             with MailBox(IMAP_SERVER, IMAP_PORT).login(IMAP_USER, IMAP_PASS, 'INBOX') as mailbox:
                 logger.debug("IMAP connection successful")
@@ -97,7 +98,7 @@ def main():
                 if message_count > 0:
                     logger.info(f"📧 Found {message_count} unread message(s)")
                 else:
-                    logger.debug("No unread messages found")
+                    logger.info("✓ No unread messages")
                 
                 for msg in messages:
                     if forward_email(msg):
