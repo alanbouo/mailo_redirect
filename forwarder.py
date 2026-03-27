@@ -71,7 +71,13 @@ def forward_email(msg, mailbox):
             if attachment_count > 0:
                 logger.debug(f"Processing {attachment_count} attachment(s)")
             for att in msg.attachments:
-                forward_msg.add_attachment(att.payload, maintype=att.maintype, subtype=att.subtype, filename=att.filename)
+                # Parse content_type (e.g., "application/pdf") into maintype and subtype
+                content_type = getattr(att, 'content_type', 'application/octet-stream')
+                if '/' in content_type:
+                    maintype, subtype = content_type.split('/', 1)
+                else:
+                    maintype, subtype = 'application', 'octet-stream'
+                forward_msg.add_attachment(att.payload, maintype=maintype, subtype=subtype, filename=att.filename)
 
             # Send via Mailo SMTP with timeout
             logger.debug(f"Connecting to SMTP server {SMTP_SERVER}:{SMTP_PORT} (timeout={SMTP_TIMEOUT}s)")
@@ -109,6 +115,7 @@ def main():
     logger.info(f"🚀 Mailo → Gmail forwarder started")
     logger.info(f"Configuration: IMAP={IMAP_SERVER}:{IMAP_PORT}, SMTP={SMTP_SERVER}:{SMTP_PORT}, interval={CHECK_INTERVAL}s")
     logger.info(f"Forwarding from {IMAP_USER} to {FORWARD_TO}")
+    logger.info(f"Delete after forward: {DELETE_AFTER_FORWARD}")
 
     while True:
         try:
@@ -135,7 +142,14 @@ def main():
                         # Optionally delete original after forwarding
                         if DELETE_AFTER_FORWARD:
                             try:
+                                # Mark as deleted and then delete (some servers need both)
+                                mailbox.flag(msg.uid, ['\\Deleted'], True)
                                 mailbox.delete(msg.uid)
+                                # Try expunge to permanently remove (may not be supported by all servers)
+                                try:
+                                    mailbox.client.expunge()
+                                except:
+                                    pass  # Expunge not supported, message still marked for deletion
                                 logger.info(f"🗑️ Deleted original message: UID {msg.uid}")
                             except Exception as e:
                                 logger.warning(f"⚠️ Failed to delete message UID {msg.uid}: {e}")
