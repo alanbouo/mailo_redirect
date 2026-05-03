@@ -4,6 +4,7 @@ import sys
 import socket
 import imaplib
 import logging
+import ssl
 from datetime import datetime
 from imap_tools import MailBox, AND
 import smtplib
@@ -38,10 +39,11 @@ SMTP_SERVER = 'mail.mailo.com'
 SMTP_PORT = int(os.getenv('SMTP_PORT', 587))  # 587 for STARTTLS, 465 for SSL
 SMTP_USER = os.getenv('IMAP_USER')  # Same as IMAP credentials for Mailo SMTP
 SMTP_PASS = os.getenv('IMAP_PASS')  # Same as IMAP password for Mailo SMTP
+SMTP_TLS_MODE = os.getenv('SMTP_TLS_MODE', 'auto')  # 'auto', 'ssl', 'starttls', 'none'
 FORWARD_TO = os.getenv('FORWARD_TO')
 
 CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', 300))  # 5 minutes default
-SMTP_TIMEOUT = int(os.getenv('SMTP_TIMEOUT', 30))  # SMTP connection timeout in seconds
+SMTP_TIMEOUT = int(os.getenv('SMTP_TIMEOUT', 60))  # SMTP connection timeout in seconds (increased from 30)
 DELETE_AFTER_FORWARD = os.getenv('DELETE_AFTER_FORWARD', 'false').lower() == 'true'  # Delete original after forwarding
 
 
@@ -93,18 +95,26 @@ def forward_email(msg, mailbox):
                 forward_msg.add_attachment(att.payload, maintype=maintype, subtype=subtype, filename=att.filename)
 
             # Send via Mailo SMTP with timeout
-            logger.debug(f"Connecting to SMTP server {SMTP_SERVER}:{SMTP_PORT} (timeout={SMTP_TIMEOUT}s)")
-            if SMTP_PORT == 465:
+            logger.debug(f"Connecting to SMTP server {SMTP_SERVER}:{SMTP_PORT} (timeout={SMTP_TIMEOUT}s, mode={SMTP_TLS_MODE})")
+            
+            if SMTP_TLS_MODE == 'ssl' or (SMTP_TLS_MODE == 'auto' and SMTP_PORT == 465):
                 # SSL connection (implicit TLS)
                 with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=SMTP_TIMEOUT) as server:
                     server.login(SMTP_USER, SMTP_PASS)
                     server.send_message(forward_msg)
-            else:
+            elif SMTP_TLS_MODE == 'starttls' or (SMTP_TLS_MODE == 'auto' and SMTP_PORT == 587):
                 # STARTTLS connection (explicit TLS on port 587)
                 with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=SMTP_TIMEOUT) as server:
                     server.starttls()
                     server.login(SMTP_USER, SMTP_PASS)
                     server.send_message(forward_msg)
+            elif SMTP_TLS_MODE == 'none':
+                # Plain SMTP without TLS (not recommended)
+                with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=SMTP_TIMEOUT) as server:
+                    server.login(SMTP_USER, SMTP_PASS)
+                    server.send_message(forward_msg)
+            else:
+                raise ValueError(f"Invalid SMTP_TLS_MODE: {SMTP_TLS_MODE}")
 
             logger.info(f"✅ Successfully forwarded: '{subject}' | From: {msg.from_}")
             return True
@@ -116,6 +126,15 @@ def forward_email(msg, mailbox):
                 continue
             else:
                 logger.error(f"❌ SMTP connection failed after {max_retries} attempts")
+                return False
+        except ssl.SSLError as e:
+            logger.warning(f"🔒 SSL error on attempt {attempt}: {e}")
+            if attempt < max_retries:
+                logger.info(f"Retrying in 5 seconds...")
+                time.sleep(5)
+                continue
+            else:
+                logger.error(f"❌ SMTP SSL failed after {max_retries} attempts")
                 return False
         except smtplib.SMTPAuthenticationError as e:
             # 535 "Currently not available" is a transient server-side error, not a bad password
