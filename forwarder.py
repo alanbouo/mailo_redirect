@@ -104,6 +104,16 @@ def forward_email(msg, mailbox):
             else:
                 logger.error(f"❌ SMTP connection failed after {max_retries} attempts")
                 return False
+        except smtplib.SMTPAuthenticationError as e:
+            # 535 "Currently not available" is a transient server-side error, not a bad password
+            logger.warning(f"⚠️ SMTP auth error on attempt {attempt} (code {e.smtp_code}): {e.smtp_error}")
+            if attempt < max_retries:
+                logger.info(f"Retrying in 5 seconds...")
+                time.sleep(5)
+                continue
+            else:
+                logger.error(f"❌ Failed to forward '{msg.subject}' after {max_retries} attempts: SMTP auth error {e.smtp_code}")
+                return False
         except Exception as e:
             logger.error(f"❌ Failed to forward '{msg.subject}': {e}", exc_info=True)
             return False
@@ -148,8 +158,8 @@ def main():
                                 # Try expunge to permanently remove (may not be supported by all servers)
                                 try:
                                     mailbox.client.expunge()
-                                except:
-                                    pass  # Expunge not supported, message still marked for deletion
+                                except Exception as e:
+                                    logger.debug(f"Expunge not supported or failed: {e}")
                                 logger.info(f"🗑️ Deleted original message: UID {msg.uid}")
                             except Exception as e:
                                 logger.warning(f"⚠️ Failed to delete message UID {msg.uid}: {e}")
