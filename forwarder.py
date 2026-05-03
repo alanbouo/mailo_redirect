@@ -2,6 +2,7 @@ import os
 import time
 import sys
 import socket
+import imaplib
 import logging
 from datetime import datetime
 from imap_tools import MailBox, AND
@@ -173,6 +174,10 @@ def main():
                         # If forwarding failed, don't mark as read so we can retry next cycle
                         logger.warning(f"⚠️ Keeping message unread due to forwarding failure: '{msg.subject or ''}'")
 
+        except imaplib.IMAP4.abort as e:
+            # IMAP session closed by server (typically because SMTP retries kept the
+            # connection idle too long). Emails were already processed; log as warning.
+            logger.warning(f"⚠️ IMAP session dropped during logout (server closed idle connection): {e}")
         except Exception as e:
             logger.error(f"❌ Connection error: {e}", exc_info=True)
 
