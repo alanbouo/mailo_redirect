@@ -2,6 +2,7 @@ import os
 import time
 import sys
 import socket
+import imaplib
 import logging
 from datetime import datetime
 from imap_tools import MailBox, AND
@@ -44,21 +45,33 @@ SMTP_TIMEOUT = int(os.getenv('SMTP_TIMEOUT', 30))  # SMTP connection timeout in 
 DELETE_AFTER_FORWARD = os.getenv('DELETE_AFTER_FORWARD', 'false').lower() == 'true'  # Delete original after forwarding
 
 
+def _sanitize_header(value: str) -> str:
+    """Strip CR/LF characters that are illegal in email header values."""
+    return value.replace('\r', ' ').replace('\n', ' ').strip()
+
+
 def forward_email(msg, mailbox):
-    """Forward a single email via SMTP with retry logic."""
+    """Forward a single email via SMTP with retry logic.
+
+    Returns:
+        True  – forwarded successfully
+        False – failed for a reason specific to this message
+        None  – SMTP server unavailable; caller should abort the batch
+    """
     max_retries = 2
+    subject = _sanitize_header(msg.subject or "")
     for attempt in range(1, max_retries + 1):
         try:
-            logger.info(f"Forwarding email: '{msg.subject}' from {msg.from_} (attempt {attempt}/{max_retries})")
-            
+            logger.info(f"Forwarding email: '{subject}' from {msg.from_} (attempt {attempt}/{max_retries})")
+
             # Create forwarded message
             # Use authenticated Mailo address as From to prevent SMTP rejection
             forward_msg = EmailMessage()
             forward_msg['From'] = SMTP_USER  # Must be the authenticated Mailo address
             forward_msg['To'] = FORWARD_TO
-            forward_msg['Subject'] = f"Fwd: {msg.subject}"
-            forward_msg['Reply-To'] = msg.from_  # So replies go to original sender
-            forward_msg['X-Original-From'] = msg.from_  # Preserve original sender info
+            forward_msg['Subject'] = f"Fwd: {subject}"
+            forward_msg['Reply-To'] = _sanitize_header(msg.from_ or "")
+            forward_msg['X-Original-From'] = _sanitize_header(msg.from_ or "")
 
             # Copy body and attachments
             if msg.html:
@@ -93,7 +106,7 @@ def forward_email(msg, mailbox):
                     server.login(SMTP_USER, SMTP_PASS)
                     server.send_message(forward_msg)
 
-            logger.info(f"✅ Successfully forwarded: '{msg.subject}' | From: {msg.from_}")
+            logger.info(f"✅ Successfully forwarded: '{subject}' | From: {msg.from_}")
             return True
         except (socket.timeout, TimeoutError) as e:
             logger.warning(f"⏱️ SMTP timeout on attempt {attempt}: {e}")
@@ -108,16 +121,16 @@ def forward_email(msg, mailbox):
             # 535 "Currently not available" is a transient server-side error, not a bad password
             logger.warning(f"⚠️ SMTP auth error on attempt {attempt} (code {e.smtp_code}): {e.smtp_error}")
             if attempt < max_retries:
-                logger.info(f"Retrying in 5 seconds...")
-                time.sleep(5)
+                logger.info(f"Retrying in 30 seconds...")
+                time.sleep(30)
                 continue
             else:
-                logger.error(f"❌ Failed to forward '{msg.subject}' after {max_retries} attempts: SMTP auth error {e.smtp_code}")
-                return False
+                logger.error(f"❌ Failed to forward '{subject}' after {max_retries} attempts: SMTP auth error {e.smtp_code}")
+                return None  # None signals SMTP server unavailable — caller should stop the batch
         except Exception as e:
-            logger.error(f"❌ Failed to forward '{msg.subject}': {e}", exc_info=True)
+            logger.error(f"❌ Failed to forward '{subject}': {e}", exc_info=True)
             return False
-    
+
     return False
 
 
@@ -133,22 +146,23 @@ def main():
             logger.debug(f"Connecting to IMAP server {IMAP_SERVER}:{IMAP_PORT}")
             with MailBox(IMAP_SERVER, IMAP_PORT).login(IMAP_USER, IMAP_PASS, 'INBOX') as mailbox:
                 logger.debug("IMAP connection successful")
-                
+
                 # Fetch only unseen messages
                 messages = list(mailbox.fetch(AND(seen=False), mark_seen=False))
                 message_count = len(messages)
-                
+
                 if message_count > 0:
                     logger.info(f"📧 Found {message_count} unread message(s)")
                 else:
                     logger.info("✓ No unread messages")
-                
+
                 for msg in messages:
-                    if forward_email(msg, mailbox):
+                    result = forward_email(msg, mailbox)
+                    if result is True:
                         # Mark as read on Mailo
                         mailbox.flag(msg.uid, ['\\Seen'], True)
                         logger.debug(f"Marked message as read: UID {msg.uid}")
-                        
+
                         # Optionally delete original after forwarding
                         if DELETE_AFTER_FORWARD:
                             try:
@@ -163,10 +177,19 @@ def main():
                                 logger.info(f"🗑️ Deleted original message: UID {msg.uid}")
                             except Exception as e:
                                 logger.warning(f"⚠️ Failed to delete message UID {msg.uid}: {e}")
+                    elif result is None:
+                        # SMTP server unavailable — skip remaining emails, they will all fail too
+                        remaining = message_count - messages.index(msg) - 1
+                        logger.warning(f"⚠️ SMTP server unavailable, stopping batch — {remaining} message(s) deferred to next cycle")
+                        break
                     else:
                         # If forwarding failed, don't mark as read so we can retry next cycle
-                        logger.warning(f"⚠️ Keeping message unread due to forwarding failure: '{msg.subject}'")
+                        logger.warning(f"⚠️ Keeping message unread due to forwarding failure: '{msg.subject or ''}'")
 
+        except imaplib.IMAP4.abort as e:
+            # IMAP session closed by server (typically because SMTP retries kept the
+            # connection idle too long). Emails were already processed; log as warning.
+            logger.warning(f"⚠️ IMAP session dropped during logout (server closed idle connection): {e}")
         except Exception as e:
             logger.error(f"❌ Connection error: {e}", exc_info=True)
 
