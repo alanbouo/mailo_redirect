@@ -120,7 +120,7 @@ def forward_email(msg, mailbox):
                 continue
             else:
                 logger.error(f"❌ Failed to forward '{subject}' after {max_retries} attempts: SMTP auth error {e.smtp_code}")
-                return False
+                return None  # None signals SMTP server unavailable — caller should stop the batch
         except Exception as e:
             logger.error(f"❌ Failed to forward '{subject}': {e}", exc_info=True)
             return False
@@ -151,11 +151,12 @@ def main():
                     logger.info("✓ No unread messages")
                 
                 for msg in messages:
-                    if forward_email(msg, mailbox):
+                    result = forward_email(msg, mailbox)
+                    if result is True:
                         # Mark as read on Mailo
                         mailbox.flag(msg.uid, ['\\Seen'], True)
                         logger.debug(f"Marked message as read: UID {msg.uid}")
-                        
+
                         # Optionally delete original after forwarding
                         if DELETE_AFTER_FORWARD:
                             try:
@@ -170,6 +171,10 @@ def main():
                                 logger.info(f"🗑️ Deleted original message: UID {msg.uid}")
                             except Exception as e:
                                 logger.warning(f"⚠️ Failed to delete message UID {msg.uid}: {e}")
+                    elif result is None:
+                        # SMTP server unavailable — skip remaining emails, they will all fail too
+                        logger.warning(f"⚠️ SMTP server unavailable, stopping batch — {message_count - messages.index(msg) - 1} message(s) deferred to next cycle")
+                        break
                     else:
                         # If forwarding failed, don't mark as read so we can retry next cycle
                         logger.warning(f"⚠️ Keeping message unread due to forwarding failure: '{msg.subject or ''}'")
