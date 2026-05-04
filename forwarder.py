@@ -5,6 +5,7 @@ import socket
 import imaplib
 import logging
 import ssl
+import base64
 from datetime import datetime
 from imap_tools import MailBox, AND
 import smtplib
@@ -70,13 +71,20 @@ def send_via_resend(msg, subject: str) -> bool:
         # Build email body
         body = msg.html if msg.html else msg.text or ""
         
-        # Prepare attachments if any
+        # Prepare attachments (Resend expects base64-encoded payloads)
         attachments = []
         if msg.attachments:
             for att in msg.attachments:
-                # For Resend, we'd need to handle attachments differently
-                # Resend API expects base64 encoded attachments
-                logger.warning(f"⚠️ Resend: attachments not fully supported yet, skipping {att.filename}")
+                try:
+                    payload = att.payload
+                    if isinstance(payload, str):
+                        payload = payload.encode()
+                    attachments.append({
+                        "filename": att.filename or "attachment",
+                        "content": base64.b64encode(payload).decode(),
+                    })
+                except Exception as e:
+                    logger.warning(f"⚠️ Resend: skipping attachment '{att.filename}': {e}")
         
         # Build email data for Resend
         email_data = {
@@ -89,6 +97,8 @@ def send_via_resend(msg, subject: str) -> bool:
                 "X-Original-From": _sanitize_header(msg.from_ or "")
             }
         }
+        if attachments:
+            email_data["attachments"] = attachments
         
         # Send via Resend API
         response = requests.post(
@@ -128,10 +138,8 @@ def forward_email(msg, mailbox):
         logger.info(f"Forwarding email: '{subject}' from {msg.from_} (via Resend)")
         if send_via_resend(msg, subject):
             return True
-        else:
-            logger.warning(f"⚠️ Resend failed, not retrying")
-            return False
-    
+        logger.warning(f"⚠️ Resend failed, falling back to SMTP")
+
     # Fall back to SMTP
     return _forward_email_smtp(msg, mailbox, subject)
 
