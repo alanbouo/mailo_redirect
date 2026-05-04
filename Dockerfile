@@ -3,7 +3,7 @@ FROM python:3.12-slim
 WORKDIR /app
 
 # Install dependencies
-RUN pip install --no-cache-dir imap-tools
+RUN pip install --no-cache-dir imap-tools requests
 
 COPY forwarder.py .
 

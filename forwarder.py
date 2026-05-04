@@ -9,6 +9,7 @@ from datetime import datetime
 from imap_tools import MailBox, AND
 import smtplib
 from email.message import EmailMessage
+import requests
 
 # Setup logging to both console and file
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
@@ -41,7 +42,10 @@ SMTP_USER = os.getenv('IMAP_USER')  # Same as IMAP credentials for Mailo SMTP
 SMTP_PASS = os.getenv('IMAP_PASS')  # Same as IMAP password for Mailo SMTP
 SMTP_TLS_MODE = os.getenv('SMTP_TLS_MODE', 'auto')  # 'auto', 'ssl', 'starttls', 'none'
 FORWARD_TO = os.getenv('FORWARD_TO')
-
+# Resend configuration (optional, preferred over SMTP)
+EMAIL_BACKEND = os.getenv('EMAIL_BACKEND', 'smtp')  # 'smtp' or 'resend'
+RESEND_API_KEY = os.getenv('RESEND_API_KEY', '')
+RESEND_FROM = os.getenv('RESEND_FROM', SMTP_USER)  # Email to send from (must be verified in Resend)
 CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', 300))  # 5 minutes default
 SMTP_TIMEOUT = int(os.getenv('SMTP_TIMEOUT', 60))  # SMTP connection timeout in seconds (increased from 30)
 DELETE_AFTER_FORWARD = os.getenv('DELETE_AFTER_FORWARD', 'false').lower() == 'true'  # Delete original after forwarding
@@ -52,16 +56,90 @@ def _sanitize_header(value: str) -> str:
     return value.replace('\r', ' ').replace('\n', ' ').strip()
 
 
+def send_via_resend(msg, subject: str) -> bool:
+    """Send email via Resend API.
+    
+    Returns:
+        True if sent successfully, False otherwise
+    """
+    if not RESEND_API_KEY:
+        logger.error("❌ Resend API key not configured (RESEND_API_KEY)")
+        return False
+    
+    try:
+        # Build email body
+        body = msg.html if msg.html else msg.text or ""
+        
+        # Prepare attachments if any
+        attachments = []
+        if msg.attachments:
+            for att in msg.attachments:
+                # For Resend, we'd need to handle attachments differently
+                # Resend API expects base64 encoded attachments
+                logger.warning(f"⚠️ Resend: attachments not fully supported yet, skipping {att.filename}")
+        
+        # Build email data for Resend
+        email_data = {
+            "from": RESEND_FROM,
+            "to": FORWARD_TO,
+            "subject": f"Fwd: {subject}",
+            "html": body if msg.html else f"<pre>{body}</pre>",
+            "reply_to": _sanitize_header(msg.from_ or ""),
+            "headers": {
+                "X-Original-From": _sanitize_header(msg.from_ or "")
+            }
+        }
+        
+        # Send via Resend API
+        response = requests.post(
+            "https://api.resend.com/emails",
+            headers={
+                "Authorization": f"Bearer {RESEND_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json=email_data,
+            timeout=SMTP_TIMEOUT
+        )
+        
+        if response.status_code in [200, 201]:
+            logger.info(f"✅ Successfully forwarded via Resend: '{subject}' | From: {msg.from_}")
+            return True
+        else:
+            logger.warning(f"⚠️ Resend API error {response.status_code}: {response.text}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"❌ Resend error: {e}", exc_info=True)
+        return False
+
+
 def forward_email(msg, mailbox):
-    """Forward a single email via SMTP with retry logic.
+    """Forward a single email via SMTP or Resend with retry logic.
 
     Returns:
         True  – forwarded successfully
         False – failed for a reason specific to this message
         None  – SMTP server unavailable; caller should abort the batch
     """
-    max_retries = 2
     subject = _sanitize_header(msg.subject or "")
+    
+    # Try Resend first if configured
+    if EMAIL_BACKEND == 'resend' and RESEND_API_KEY:
+        logger.info(f"Forwarding email: '{subject}' from {msg.from_} (via Resend)")
+        if send_via_resend(msg, subject):
+            return True
+        else:
+            logger.warning(f"⚠️ Resend failed, not retrying")
+            return False
+    
+    # Fall back to SMTP
+    return _forward_email_smtp(msg, mailbox, subject)
+
+
+def _forward_email_smtp(msg, mailbox, subject: str):
+    """Send email via SMTP with retry logic."""
+    max_retries = 2
+    logger.debug(f"SMTP Auth config: server={SMTP_SERVER}, port={SMTP_PORT}, user={SMTP_USER[:20]}..., mode={SMTP_TLS_MODE}")
     for attempt in range(1, max_retries + 1):
         try:
             logger.info(f"Forwarding email: '{subject}' from {msg.from_} (attempt {attempt}/{max_retries})")
@@ -137,14 +215,16 @@ def forward_email(msg, mailbox):
                 logger.error(f"❌ SMTP SSL failed after {max_retries} attempts")
                 return False
         except smtplib.SMTPAuthenticationError as e:
-            # 535 "Currently not available" is a transient server-side error, not a bad password
+            # 535 "Currently not available" is typically a transient server-side error or IP/security restriction
             logger.warning(f"⚠️ SMTP auth error on attempt {attempt} (code {e.smtp_code}): {e.smtp_error}")
             if attempt < max_retries:
-                logger.info(f"Retrying in 30 seconds...")
-                time.sleep(30)
+                retry_delay = 30 + (attempt * 15)  # 45s on attempt 2, increasing backoff
+                logger.info(f"Retrying in {retry_delay} seconds... (transient auth error, likely server-side issue)")
+                time.sleep(retry_delay)
                 continue
             else:
                 logger.error(f"❌ Failed to forward '{subject}' after {max_retries} attempts: SMTP auth error {e.smtp_code}")
+                logger.error(f"📋 Diagnostics: Check if Mailo account is locked, if password changed, or if authenticating from a new IP")
                 return None  # None signals SMTP server unavailable — caller should stop the batch
         except Exception as e:
             logger.error(f"❌ Failed to forward '{subject}': {e}", exc_info=True)
@@ -154,10 +234,16 @@ def forward_email(msg, mailbox):
 
 
 def main():
-    logger.info(f"🚀 Mailo → Gmail forwarder started")
-    logger.info(f"Configuration: IMAP={IMAP_SERVER}:{IMAP_PORT}, SMTP={SMTP_SERVER}:{SMTP_PORT}, interval={CHECK_INTERVAL}s")
-    logger.info(f"Forwarding from {IMAP_USER} to {FORWARD_TO}")
+    logger.info(f"🚀 Mailo → {FORWARD_TO} forwarder started")
+    if EMAIL_BACKEND == 'resend':
+        logger.info(f"📧 Backend: Resend (API-based, more reliable)")
+        logger.info(f"Sending from: {RESEND_FROM} → {FORWARD_TO}")
+    else:
+        logger.info(f"📧 Backend: SMTP (Mailo)")
+        logger.info(f"Configuration: IMAP={IMAP_SERVER}:{IMAP_PORT}, SMTP={SMTP_SERVER}:{SMTP_PORT} (TLS={SMTP_TLS_MODE}), interval={CHECK_INTERVAL}s")
+        logger.info(f"Forwarding from {IMAP_USER} to {FORWARD_TO}")
     logger.info(f"Delete after forward: {DELETE_AFTER_FORWARD}")
+    logger.info(f"⚠️  If you get SMTP error 535, see SMTP_535_TROUBLESHOOTING.md or switch to Resend backend")
 
     while True:
         try:
